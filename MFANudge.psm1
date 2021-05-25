@@ -30,6 +30,7 @@ $DISABLEPOLICYOK        = 'Nudge Policy disabled'
 $GETPOLICYFAILED        = 'Failed to get Nudge policy'
 $ENABLEPOLICYFAILED     = 'Enable policy failed'
 $ENABLEPOLICYOK         = 'Enable policy succeeded'
+$INCLUDELISTEMPTY       = 'Include list is empty'
 
 function Import-NudgeModuleConfig
 {
@@ -292,8 +293,13 @@ function Convert-GroupNameToGUID
     {
         return [GUID]::Empty
     }
-
-    return [GUID](($Result.Content | ConvertFrom-Json).value.id)
+    
+    $Obj = ($Result.Content | ConvertFrom-Json).value
+    if ($Obj.Count -ne 1)
+    {
+        return [GUID]::Empty
+    }
+    return $Obj[0].id
 }
 
 function Convert-GroupGUIDToName
@@ -454,7 +460,7 @@ function Enable-MFANudge
 
         [Parameter(ParameterSetName='AllUsers')]
         [Switch]
-        $AllUsers,
+        $IncludeAllUsers,
 
         [Parameter(ParameterSetName='ScopedInclude')]
         [String[]]
@@ -481,14 +487,14 @@ function Enable-MFANudge
 
     $IncludeTargets = [System.Collections.ArrayList]::new()
 
-    if ($AllUsers)
+    if ($IncludeAllUsers)
     {
         $AllUsersEntry = [pscustomobject]@{targetType='group'; id='All_users'; targetedAuthenticationMethod='microsoftAuthenticator'}
         $IncludeTargets = @($AllUsersEntry)
     }
     else
     {
-        if (($IncludeUsers.Count -eq 0) -and ($IncludeGroups -eq 0))
+        if (($IncludeUsers.Count -eq 0) -and ($IncludeGroups.Count -eq 0))
         {
             Write-Host 'At least one entry should be included with -IncludeUsers or -IncludeGroups'
             return
@@ -516,6 +522,12 @@ function Enable-MFANudge
             }
 
             [void]$IncludeTargets.Add([pscustomobject]@{targetType='group'; id=$GUID.ToString(); targetedAuthenticationMethod='microsoftAuthenticator'})
+        }
+
+        if ($IncludeTargets.Count -eq 0)
+        {
+            Write-Host $INCLUDELISTEMPTY
+            return
         }
     }
 
@@ -586,7 +598,7 @@ function Set-MFANudgeSnoozeDuration
     
     param
     (
-        [Parameter()]
+        [Parameter(Position=0)]
         [ValidateRange(0, 14)]
         [UInt16]
         $SnoozeDuration = 0
@@ -658,7 +670,6 @@ Export-ModuleMember -Function Set-MFANudgeSnoozeDuration
 if (!(Import-NudgeModuleConfig))
 {
     Write-Host $CONFIGFILENOTFOUND
-    throw
 }
 
 if (-not (Get-Module -Name $MSALModuleName -ListAvailable))
