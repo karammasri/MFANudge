@@ -2,17 +2,16 @@
 
 Set-StrictMode -Version 'Latest'
 
+# MSAL and token variables
 $MSALModuleName = 'msal.ps'
-
-$ConfigFileName = '.\mfanudgeconfig.json'
-$MyConfig = $null
-
-
 $MSALToken = $null
 $Headers   = $null
 
-$MSALModuleName = 'msal.ps'
+# Configuration file variables
+$ConfigFileName = '.\mfanudgeconfig.json'
+$MyConfig = $null
 
+# MSGraph variables
 $RedirectURI    = 'https://login.microsoftonline.com/common/oauth2/nativeclient'
 $NudgePolicyURI = 'https://graph.microsoft.com/beta/policies/authenticationmethodspolicy'
 $UsersURI       = 'https://graph.microsoft.com/v1.0/users'
@@ -323,6 +322,28 @@ function Convert-GroupGUIDToName
     return (($Result.Content | ConvertFrom-Json).displayName)
 }
 
+function Get-MSGraphNudgePolicy
+{
+    param()
+
+    try 
+    {
+        $Result = Invoke-Graph -URI $NudgePolicyURI -Method 'GET'
+    }
+    catch 
+    {
+        return $null
+    }
+
+    if ($Result.StatusCode -ne [System.Net.HttpStatusCode]::OK)
+    {
+        Write-Host $GETPOLICYFAILED
+        return $null
+    }
+
+    return ($Result.Content | ConvertFrom-Json)
+}
+
 function Get-MFANudge
 {
     [CmdletBinding()]
@@ -335,23 +356,14 @@ function Get-MFANudge
         return
     }
 
-    try 
+    $Policy = Get-MSGraphNudgePolicy
+
+    if (!$Policy)
     {
-        $Result = Invoke-Graph -URI $NudgePolicyURI -Method 'GET'
-    }
-    catch 
-    {
-        Write-Host $GETPOLICYFAILED
+        Write-Host 'Nudge policy not found'
         return
     }
 
-    if ($Result.StatusCode -ne [System.Net.HttpStatusCode]::OK)
-    {
-        Write-Host $GETPOLICYFAILED
-        return
-    }
-
-    $Policy = ($Result.Content | ConvertFrom-Json)
     if ($Policy.psobject.Properties.Name -notcontains 'registrationEnforcement')
     {
         Write-Host 'Registration enforcement entry not found'
@@ -425,6 +437,7 @@ function Get-MFANudge
     {
         Write-Host 'No excluded targets'
     }
+    Write-Host ''
 }
 Export-ModuleMember -Function Get-MFANudge
 
@@ -546,9 +559,6 @@ function Enable-MFANudge
 
     $RegEnfJSON = [pscustomobject]@{registrationEnforcement=[pscustomobject]@{authenticationMethodsRegistrationCampaign=[pscustomobject]@{state='enabled'; snoozeDurationInDays=$SnoozeDuration; includeTargets=$IncludeTargets; excludeTargets=$ExcludeTargets} } } | ConvertTo-Json -Compress -Depth 99
 
-#    Write-Host $RegEnfJSON
-#    return
-
     try 
     {
         $Result = Invoke-Graph -URI $NudgePolicyURI -Method 'PATCH' -Body $RegEnfJSON
@@ -570,10 +580,85 @@ function Enable-MFANudge
 }
 Export-ModuleMember -Function Enable-MFANudge
 
+function Set-MFANudgeSnoozeDuration
+{
+    [CmdletBinding()]
+    
+    param
+    (
+        [Parameter()]
+        [ValidateRange(0, 14)]
+        [UInt16]
+        $SnoozeDuration = 0
+    )
+
+    if (!$MyConfig)
+    {
+        Write-Host $CONFIGFILENOTFOUND
+        return
+    }
+
+    $Policy = Get-MSGraphNudgePolicy
+
+    if (!$Policy)
+    {
+        Write-Host 'Nudge policy not found'
+        return
+    }
+
+    if ($Policy.psobject.Properties.Name -notcontains 'registrationEnforcement')
+    {
+        Write-Host 'Registration enforcement entry not found'
+        return
+    }
+
+    if ($Policy.registrationEnforcement.psobject.Properties.Name -notcontains 'authenticationMethodsRegistrationCampaign')
+    {
+        Write-Host 'Registration campaign entry not found'
+        return
+    }
+
+    if ($Policy.registrationEnforcement.authenticationMethodsRegistrationCampaign.state -eq 'Disabled')
+    {
+        Write-Host 'Nudge policy is disabled. Enable the policy using Enable-MFANudge'
+        return
+    }
+
+    if ($Policy.registrationEnforcement.authenticationMethodsRegistrationCampaign.snoozeDurationInDays -eq $SnoozeDuration)
+    {
+        Write-Host "Snooze duration is already set to the value $SnoozeDuration days. No further changes required."
+        return
+    }
+
+    $Policy.registrationEnforcement.authenticationMethodsRegistrationCampaign.snoozeDurationInDays = $SnoozeDuration
+    $JSON = $Policy | ConvertTo-Json -Compress -Depth 99
+
+    try 
+    {
+        $Result = Invoke-Graph -URI $NudgePolicyURI -Method 'PATCH' -Body $JSON
+    }
+    catch 
+    {
+        Write-Host 'Failed to set snooze'
+        return
+    }
+
+    if ($Result.StatusCode -ne [System.Net.HttpStatusCode]::NoContent)
+    {
+        Write-Host 'Failed to set snooze'
+    }
+    else
+    {
+        Write-Host "Snooze duration set to $SnoozeDuration"
+    }
+}
+Export-ModuleMember -Function Set-MFANudgeSnoozeDuration
+
 # Main
 if (!(Import-NudgeModuleConfig))
 {
     Write-Host $CONFIGFILENOTFOUND
+    throw
 }
 
 if (-not (Get-Module -Name $MSALModuleName -ListAvailable))
