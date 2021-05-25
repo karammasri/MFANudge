@@ -13,13 +13,13 @@ $Headers   = $null
 
 $MSALModuleName = 'msal.ps'
 
-$RedirectURI = 'https://login.microsoftonline.com/common/oauth2/nativeclient'
-$NudgePolicyURI =  'https://graph.microsoft.com/beta/policies/authenticationmethodspolicy'
-
-
+$RedirectURI    = 'https://login.microsoftonline.com/common/oauth2/nativeclient'
+$NudgePolicyURI = 'https://graph.microsoft.com/beta/policies/authenticationmethodspolicy'
+$UsersURI       = 'https://graph.microsoft.com/v1.0/users'
+$GroupsURI      = 'https://graph.microsoft.com/v1.0/groups'
 
 # Output messages
-$CONFIGFILENOTFOUND     = 'Configuration information not found. Please run Save-NudgeModuleConfig to setup the module configuration.'
+$CONFIGFILENOTFOUND     = 'Configuration information not found. Please run Save-NudgeModuleConfig to setup the TenantID and CLientID configuration.'
 $INVALIDTENANTID        = 'TenantID is not a valid GUID'
 $INVALIDCLIENTID        = 'ClientID is not a valid GUID'
 $CANNOTSAVECONFIG       = 'Unable to save configuration file'
@@ -28,6 +28,9 @@ $MSALNOTINSTALLED       = 'Please install msal.ps before using this module'
 $UNABLETOGETACCESSTOKEN = 'Unable to get an access token'
 $DISABLEPOLICYFAILED    = 'Unable to disable the nudge policy'
 $DISABLEPOLICYOK        = 'Nudge Policy disabled'
+$GETPOLICYFAILED        = 'Failed to get Nudge policy'
+$ENABLEPOLICYFAILED     = 'Enable policy failed'
+$ENABLEPOLICYOK         = 'Enable policy succeeded'
 
 function Import-NudgeModuleConfig
 {
@@ -46,7 +49,7 @@ function Import-NudgeModuleConfig
     }
 
     Write-Debug $Script:MyConfig
-    
+
     return $true
 }
 
@@ -103,8 +106,8 @@ function Get-Token
     
     $Result = $null
 
- #   try 
- #   {
+    try 
+    {
         if (!$script:MSALToken)
         {
             $Result = Get-MsalToken -TenantId $MyConfig.TenantID -ClientId $MyConfig.ClientID -RedirectUri $RedirectURI -Interactive
@@ -117,11 +120,11 @@ function Get-Token
                 $Result = Get-MsalToken -TenantId $MyConfig.TenantID -ClientId $MyConfig.ClientID -Interactive
             }       
         }            
-  #  }
-  #  catch
-  #  {
-  #      throw $UNABLETOGETACCESSTOKEN
-  #  }
+    }
+    catch
+    {
+       throw $UNABLETOGETACCESSTOKEN
+    }
 
     $script:MSALToken = $Result
     $Script:Headers = @{"Authorization" = "Bearer $($Result.AccessToken)"; "Content-Type" = "application/json"}
@@ -185,6 +188,9 @@ function Invoke-Graph
 
 function Disable-MFANudge
 {
+    [CmdletBinding()]
+    
+    param()
 
     if (!$MyConfig)
     {
@@ -204,7 +210,7 @@ function Disable-MFANudge
         return
     }
 
-    if ($Result.StatusCode -ne [System.Net.HttpStatusCode]::OK)
+    if ($Result.StatusCode -ne [System.Net.HttpStatusCode]::NoContent)
     {
         Write-Host $DISABLEPOLICYFAILED
     }
@@ -214,6 +220,355 @@ function Disable-MFANudge
     }
 }
 Export-ModuleMember -Function Disable-MFANudge
+
+function Convert-UserUPNToGUID
+{
+    param
+    (
+        [String]
+        $UPN
+    )
+
+    if ($UPN.Length -eq 0)
+    {
+        return [GUID]::Empty
+    }
+
+    $UserQueryURI = $UsersURI + '/' + [System.Web.HttpUtility]::UrlEncode($UPN)
+
+    $Result = Invoke-Graph -URI $UserQueryURI -Method 'GET'
+
+    if (($Result.StatusCode -ne [System.Net.HttpStatusCode]::OK) -or ($Result.Content.Length -eq 0))
+    {
+        return [GUID]::Empty
+    }
+
+    return [GUID](($Result.Content | ConvertFrom-Json).id)
+}
+
+function Convert-UserGUIDToUPN
+{
+    [CmdletBinding()]
+
+    param
+    (
+        [String]
+        $GUID
+    )
+
+    if ($GUID.Length -eq 0)
+    {
+        return ''
+    }
+
+    $UserQueryURI = $UsersURI + '/' + [System.Web.HttpUtility]::UrlEncode($GUID)
+    $Result = Invoke-Graph -URI $UserQueryURI -Method 'GET'
+
+    if (($Result.StatusCode -ne [System.Net.HttpStatusCode]::OK) -or ($Result.Content.Length -eq 0))
+    {
+        return ''
+    }
+
+    return (($Result.Content | ConvertFrom-Json).userPrincipalName)
+}
+
+function Convert-GroupNameToGUID
+{
+    param
+    (
+        [String]
+        $GroupName
+    )
+
+    if ($GroupName.Length -eq 0)
+    {
+        return [GUID]::Empty
+    }
+
+    $GroupQueryURI = $GroupsURI + '?$filter=(displayName eq ''' + $GroupName + ''')'
+
+    $Result = Invoke-Graph -URI $GroupQueryURI -Method 'GET'
+
+    if (($Result.StatusCode -ne [System.Net.HttpStatusCode]::OK) -or ($Result.Content.Length -eq 0))
+    {
+        return [GUID]::Empty
+    }
+
+    return [GUID](($Result.Content | ConvertFrom-Json).value.id)
+}
+
+function Convert-GroupGUIDToName
+{
+    [CmdletBinding()]
+
+    param
+    (
+        [String]
+        $GUID
+    )
+
+    if ($GUID.Length -eq 0)
+    {
+        return ''
+    }
+
+    $GroupQueryURI = $GroupsURI + '/' + [System.Web.HttpUtility]::UrlEncode($GUID)
+    $Result = Invoke-Graph -URI $GroupQueryURI -Method 'GET'
+
+    if (($Result.StatusCode -ne [System.Net.HttpStatusCode]::OK) -or ($Result.Content.Length -eq 0))
+    {
+        return ''
+    }
+
+    return (($Result.Content | ConvertFrom-Json).displayName)
+}
+
+function Get-MFANudge
+{
+    [CmdletBinding()]
+    
+    param()
+
+    if (!$MyConfig)
+    {
+        Write-Host $CONFIGFILENOTFOUND
+        return
+    }
+
+    try 
+    {
+        $Result = Invoke-Graph -URI $NudgePolicyURI -Method 'GET'
+    }
+    catch 
+    {
+        Write-Host $GETPOLICYFAILED
+        return
+    }
+
+    if ($Result.StatusCode -ne [System.Net.HttpStatusCode]::OK)
+    {
+        Write-Host $GETPOLICYFAILED
+        return
+    }
+
+    $Policy = ($Result.Content | ConvertFrom-Json)
+    if ($Policy.psobject.Properties.Name -notcontains 'registrationEnforcement')
+    {
+        Write-Host 'Registration enforcement entry not found'
+        return
+    }
+
+    $RegEnf = $Policy.registrationEnforcement
+    if ($RegEnf.psobject.Properties.Name -notcontains 'authenticationMethodsRegistrationCampaign')
+    {
+        Write-Host 'Registration campaign entry not found'
+        return
+    }
+
+    $Nudge = $RegEnf.authenticationMethodsRegistrationCampaign
+
+    Write-Host "Nudge policy is $($Nudge.state)"
+
+    # No more info to show if policy is disabled
+    if ($Nudge.state -eq 'disabled')
+    {
+        return
+    }
+
+    Write-host "Snooze duration is $($Nudge.snoozeDurationInDays) days"
+
+    Write-Host ''
+    Write-Host 'Included targets:'
+    foreach ($i in $Nudge.includeTargets)
+    {
+        if ($i.targetType -eq 'user')
+        {
+            $DisplayName = 'User: ' + (Convert-UserGUIDToUPN -GUID ($i.id))
+        }
+        else
+        {
+            $DisplayName = 'Group: '
+            if ($i.id -ne 'All_Users')
+            {
+                $DisplayName += Convert-GroupGUIDToName -GUID $i.id
+            }
+            else
+            {
+                $DisplayName += 'All_Users'
+            }
+        }
+
+        $DisplayName += " (GUID: $($i.id))"
+        Write-Host $DisplayName
+    }
+
+    Write-Host ''
+    Write-Host 'Excluded targets:'
+    if ($Nudge.psobject.Properties.name -contains 'excludeTargets' -and $Nudge.excludeTargets.Count -gt 0)
+    {
+        foreach ($i in $Nudge.excludeTargets)
+        {
+            if ($i.targetType -eq 'user')
+            {
+                $DisplayName = 'User: ' + (Convert-UserGUIDToUPN -GUID ($i.id))
+            }
+            else
+            {
+                $DisplayName = 'Group: ' + (Convert-GroupGUIDToName -GUID ($i.id))
+            }
+    
+            $DisplayName += " (GUID: $($i.id))"
+            Write-Host $DisplayName
+        }        
+    }
+    else
+    {
+        Write-Host 'No excluded targets'
+    }
+}
+Export-ModuleMember -Function Get-MFANudge
+
+function Enable-MFANudge
+{
+    [CmdletBinding()]
+    
+    param
+    (
+        [Parameter()]
+        [ValidateRange(0, 14)]
+        [UInt16]
+        $SnoozeDuration = 0,
+
+        [Parameter(ParameterSetName='AllUsers')]
+        [Switch]
+        $AllUsers,
+
+        [Parameter(ParameterSetName='ScopedInclude')]
+        [String[]]
+        $IncludeUsers,
+
+        [Parameter(ParameterSetName='ScopedInclude')]
+        [String[]]
+        $IncludeGroups,
+
+        [Parameter()]
+        [String[]]
+        $ExcludeUsers,
+
+        [Parameter()]
+        [String[]]
+        $ExcludeGroups
+    )
+
+    if (!$MyConfig)
+    {
+        Write-Host $CONFIGFILENOTFOUND
+        return
+    }
+
+    $IncludeTargets = [System.Collections.ArrayList]::new()
+
+    if ($AllUsers)
+    {
+        $AllUsersEntry = [pscustomobject]@{targetType='group'; id='All_users'; targetedAuthenticationMethod='microsoftAuthenticator'}
+        $IncludeTargets = @($AllUsersEntry)
+    }
+    else
+    {
+        if (($IncludeUsers.Count -eq 0) -and ($IncludeGroups -eq 0))
+        {
+            Write-Host 'At least one entry should be included with -IncludeUsers or -IncludeGroups'
+            return
+        }
+
+        foreach ($u in $IncludeUsers)
+        {
+            $GUID = Convert-UserUPNToGUID -UPN $u
+            if ($GUID -eq [GUID]::Empty)
+            {
+                Write-Host "Warning: cannot find user with UPN $u. Entry will be ignored"
+                continue
+            }
+
+            [void]$IncludeTargets.Add([pscustomobject]@{targetType='user'; id=$GUID.ToString(); targetedAuthenticationMethod='microsoftAuthenticator'})
+        }
+
+        foreach ($g in $IncludeGroups)
+        {
+            $GUID = Convert-GroupNameToGUID -GroupName $g
+            if ($GUID -eq [GUID]::Empty)
+            {
+                Write-Host "Warning: cannot find group with name $g. Entry will be ignored"
+                continue
+            }
+
+            [void]$IncludeTargets.Add([pscustomobject]@{targetType='group'; id=$GUID.ToString(); targetedAuthenticationMethod='microsoftAuthenticator'})
+        }
+    }
+
+    $ExcludeTargets = [System.Collections.ArrayList]::new()
+    foreach ($u in $ExcludeUsers)
+    {
+        # Map the user to GUID
+        if ($u -in $IncludeUsers)
+        {
+            Write-Host "User $u is in the include and exclude list. Ignorting exclude entry"
+            continue
+        }
+
+        $GUID = Convert-UserUPNToGUID -UPN $u
+        if ($GUID -eq [GUID]::Empty)
+        {
+            Write-Host "Warning: cannot find user with UPN $u. Entry will be ignored"
+            continue
+        }
+
+        [void]$ExcludeTargets.Add([pscustomobject]@{targetType='user'; id=$GUID.ToString(); targetedAuthenticationMethod='microsoftAuthenticator'})
+    }
+
+    foreach ($g in $ExcludeGroups)
+    {
+        if ($g -in $IncludeGroups)
+        {
+            Write-Host "Group $g is in the include and exclude list. Ignorting exclude entry"
+            continue
+        }   
+        
+        $GUID = Convert-GroupNameToGUID -GroupName $g
+        if ($GUID -eq [GUID]::Empty)
+        {
+            Write-Host "Warning: cannot find group with name $g. Entry will be ignored"
+            continue
+        }
+
+        [void]$ExcludeTargets.Add([pscustomobject]@{targetType='group'; id=$GUID.ToString(); targetedAuthenticationMethod='microsoftAuthenticator'})        
+    }
+
+    $RegEnfJSON = [pscustomobject]@{registrationEnforcement=[pscustomobject]@{authenticationMethodsRegistrationCampaign=[pscustomobject]@{state='enabled'; snoozeDurationInDays=$SnoozeDuration; includeTargets=$IncludeTargets; excludeTargets=$ExcludeTargets} } } | ConvertTo-Json -Compress -Depth 99
+
+#    Write-Host $RegEnfJSON
+#    return
+
+    try 
+    {
+        $Result = Invoke-Graph -URI $NudgePolicyURI -Method 'PATCH' -Body $RegEnfJSON
+    }
+    catch 
+    {
+        Write-Host $ENABLEPOLICYFAILED
+        return
+    }
+
+    if ($Result.StatusCode -ne [System.Net.HttpStatusCode]::NoContent)
+    {
+        Write-Host $ENABLEPOLICYFAILED
+    }
+    else
+    {
+        Write-Host $ENABLEPOLICYOK
+    }
+}
+Export-ModuleMember -Function Enable-MFANudge
 
 # Main
 if (!(Import-NudgeModuleConfig))
