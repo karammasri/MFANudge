@@ -18,19 +18,24 @@ $UsersURI       = 'https://graph.microsoft.com/v1.0/users'
 $GroupsURI      = 'https://graph.microsoft.com/v1.0/groups'
 
 # Output messages
-$CONFIGFILENOTFOUND     = 'Configuration information not found. Please run Save-NudgeModuleConfig to setup the TenantID and CLientID configuration.'
-$INVALIDTENANTID        = 'TenantID is not a valid GUID'
-$INVALIDCLIENTID        = 'ClientID is not a valid GUID'
-$CANNOTSAVECONFIG       = 'Unable to save configuration file'
-$CONFIGFILESAVED        = 'Configuration has been saved'
-$MSALNOTINSTALLED       = 'Please install msal.ps before using this module'
-$UNABLETOGETACCESSTOKEN = 'Unable to get an access token'
-$DISABLEPOLICYFAILED    = 'Unable to disable the nudge policy'
-$DISABLEPOLICYOK        = 'Nudge Policy disabled'
-$GETPOLICYFAILED        = 'Failed to get Nudge policy'
-$ENABLEPOLICYFAILED     = 'Enable policy failed'
-$ENABLEPOLICYOK         = 'Enable policy succeeded'
-$INCLUDELISTEMPTY       = 'Include list is empty'
+$CONFIGFILENOTFOUND       = 'Configuration information not found. Please run Save-NudgeModuleConfig to setup the TenantID and CLientID configuration.'
+$INVALIDTENANTID          = 'TenantID is not a valid GUID'
+$INVALIDCLIENTID          = 'ClientID is not a valid GUID'
+$CANNOTSAVECONFIG         = 'Unable to save configuration file'
+$CONFIGFILESAVED          = 'Configuration has been saved'
+$MSALNOTINSTALLED         = 'Please install msal.ps before using this module'
+$UNABLETOGETACCESSTOKEN   = 'Unable to get an access token'
+$DISABLEPOLICYFAILED      = 'Unable to disable the nudge policy'
+$DISABLEPOLICYOK          = 'Nudge Policy disabled'
+$GETPOLICYFAILED          = 'Failed to get Nudge policy'
+$ENABLEPOLICYFAILED       = 'Enable policy failed'
+$ENABLEPOLICYOK           = 'Enable policy succeeded'
+$INCLUDELISTEMPTY         = 'Include list is empty'
+$ALLEXCLUDETARGETSIGNORED = 'All the exclude targets were ignored. Policy will not be modified'
+$POLICYNOTFOUND           = 'Nudge policy not found'
+$REGENFENTRYNOTFOUND      = 'Registration enforcement entry not found'
+$REGCAMNOTFOUND           = 'Registration campaign entry not found'
+$INCLUDEPARAMSEMPTY       = 'At least one entry should be included with -IncludeUsers or -IncludeGroups'
 
 function Import-NudgeModuleConfig
 {
@@ -366,20 +371,20 @@ function Get-MFANudge
 
     if (!$Policy)
     {
-        Write-Host 'Nudge policy not found'
+        Write-Host $POLICYNOTFOUND
         return
     }
 
     if ($Policy.psobject.Properties.Name -notcontains 'registrationEnforcement')
     {
-        Write-Host 'Registration enforcement entry not found'
+        Write-Host $REGENFENTRYNOTFOUND
         return
     }
 
     $RegEnf = $Policy.registrationEnforcement
     if ($RegEnf.psobject.Properties.Name -notcontains 'authenticationMethodsRegistrationCampaign')
     {
-        Write-Host 'Registration campaign entry not found'
+        Write-Host $REGCAMNOTFOUND
         return
     }
 
@@ -494,9 +499,9 @@ function Enable-MFANudge
     }
     else
     {
-        if (($IncludeUsers.Count -eq 0) -and ($IncludeGroups.Count -eq 0))
+        if ((($null -eq $IncludeUsers) -or ($IncludeUsers.Count -eq 0)) -and (($null -eq $IncludeGroups) -or ($IncludeGroups.Count -eq 0)))
         {
-            Write-Host 'At least one entry should be included with -IncludeUsers or -IncludeGroups'
+            Write-Host $INCLUDEPARAMSEMPTY
             return
         }
 
@@ -569,6 +574,13 @@ function Enable-MFANudge
         [void]$ExcludeTargets.Add([pscustomobject]@{targetType='group'; id=$GUID.ToString(); targetedAuthenticationMethod='microsoftAuthenticator'})        
     }
 
+    # Do not set the policy if all the entries in the ExcludeUsers and ExcludeGroups were ignored
+    if ((($ExcludeUsers.Count -gt 0) -or ($ExcludeGroups.Count -gt 0)) -and ($ExcludeTargets.Count -eq 0))
+    {
+        Write-Host $ALLEXCLUDETARGETSIGNORED
+        return
+    }
+    
     $RegEnfJSON = [pscustomobject]@{registrationEnforcement=[pscustomobject]@{authenticationMethodsRegistrationCampaign=[pscustomobject]@{state='enabled'; snoozeDurationInDays=$SnoozeDuration; includeTargets=$IncludeTargets; excludeTargets=$ExcludeTargets} } } | ConvertTo-Json -Compress -Depth 99
 
     try 
@@ -620,13 +632,13 @@ function Set-MFANudgeSnoozeDuration
 
     if ($Policy.psobject.Properties.Name -notcontains 'registrationEnforcement')
     {
-        Write-Host 'Registration enforcement entry not found'
+        Write-Host $REGENFENTRYNOTFOUND
         return
     }
 
     if ($Policy.registrationEnforcement.psobject.Properties.Name -notcontains 'authenticationMethodsRegistrationCampaign')
     {
-        Write-Host 'Registration campaign entry not found'
+        Write-Host $REGCAMNOTFOUND
         return
     }
 
