@@ -53,7 +53,7 @@ function Import-NudgeModuleConfig
         return $false
     }
 
-    Write-Debug $Script:MyConfig
+    Write-Debug $script:MyConfig
 
     return $true
 }
@@ -477,11 +477,11 @@ function Enable-MFANudge
 
         [Parameter()]
         [String[]]
-        $ExcludeUsers,
+        $ExcludeUsers = @(),
 
         [Parameter()]
         [String[]]
-        $ExcludeGroups
+        $ExcludeGroups = @()
     )
 
     if (!$MyConfig)
